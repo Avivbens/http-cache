@@ -1,14 +1,21 @@
 import type { Observable } from 'rxjs'
-import { from, of, switchMap } from 'rxjs'
-import { DEFAULT_TTL, DEFAULT_VERSION } from '../constants/config'
+import { from, lastValueFrom, of, switchMap } from 'rxjs'
+import { DB_NAME, DEFAULT_TTL, DEFAULT_VERSION } from '../constants/config'
 import { getDB } from '../constants/db'
-import type { HttpCacheItem, HttpCacheOptions } from '../models'
-import { IndexedDbTable } from '../models'
-import { isDbExists } from './utils.service'
+import type { HttpCacheItem } from '../models/http-cache-item.model'
+import type { HttpCacheOptions } from '../models/http-cache-options.model'
+import type { CacheTableIndexKeys } from '../models/table.model'
+import { IndexedDbTable } from '../models/table.model'
+import { getCacheKey, getDefaultRecordReference, isDbExists, isValidTTL } from './utils.service'
 
 export async function setCacheValue<T = unknown>(key: string, payload: T, options: HttpCacheOptions): Promise<void> {
     try {
-        const { ttl = DEFAULT_TTL, version = DEFAULT_VERSION } = options
+        const {
+            ttl = DEFAULT_TTL,
+            version = DEFAULT_VERSION,
+            url,
+            reference = getDefaultRecordReference(url),
+        } = options
         const updatedAt: number = Date.now()
         const cacheValue: Omit<HttpCacheItem<T>, 'id' | 'method'> = {
             key,
@@ -16,9 +23,11 @@ export async function setCacheValue<T = unknown>(key: string, payload: T, option
             ttl,
             version,
             updatedAt,
+            url,
+            reference,
         }
 
-        const db = getDB()
+        const db = await getDB()
 
         await db.table<Omit<HttpCacheItem<T>, 'id' | 'method'>>(IndexedDbTable.Requests).add(cacheValue, key)
     } catch (error) {
@@ -39,32 +48,38 @@ export function setCacheValueOperator<T = unknown>(
         )
 }
 
-export function getCacheKey(url: string): string {
-    return btoa(url)
+export async function deleteRecordByProperty(indexProperty: CacheTableIndexKeys, value: string): Promise<boolean> {
+    const db = await getDB()
+    return (
+        db
+            ?.table(IndexedDbTable.Requests)
+            ?.where?.(indexProperty)
+            ?.equals(value)
+            ?.delete()
+            ?.then(() => true)
+            ?.catch(() => false) ?? Promise.resolve(false)
+    )
 }
 
-export function isValidTTL(updatedAt: number, ttl: number): boolean {
-    const now: number = Date.now()
-    const diff: number = now - updatedAt
-
-    return diff < ttl
+export function deleteRecordsByReference(reference: string): Observable<boolean> {
+    return from(deleteRecordByProperty('reference', reference))
 }
 
-export async function getCacheValue<T = unknown>(key: string, skipCache = false): Promise<T> {
+export async function getCacheValue<T = unknown>(key: string, skipCache = false): Promise<T | null> {
     try {
-        const db = getDB()
-        const cacheValue: HttpCacheItem<T> = await db.table<HttpCacheItem<T>>(IndexedDbTable.Requests).get({
+        const db = await getDB()
+        const cacheValue: HttpCacheItem<T> | undefined = await db.table<HttpCacheItem<T>>(IndexedDbTable.Requests).get({
             key,
         })
         if (!cacheValue) {
             return null
         }
 
-        const { id, updatedAt, ttl, res } = cacheValue
+        const { updatedAt, ttl, res, reference } = cacheValue
 
-        const isCacheValid: boolean = isValidTTL(updatedAt, ttl)
+        const isCacheValid: boolean = !!ttl && isValidTTL(updatedAt, ttl)
         if (!isCacheValid || skipCache) {
-            db.table<HttpCacheItem<T>>(IndexedDbTable.Requests).delete(id)
+            await lastValueFrom(deleteRecordsByReference(reference))
             return null
         }
 
@@ -79,14 +94,14 @@ export function withCache<T = unknown>(httpCall: Observable<T>, options: HttpCac
     const { url, skipCache = false } = options
     const key: string = getCacheKey(url)
 
-    return from(isDbExists()).pipe(
+    return from(isDbExists(DB_NAME)).pipe(
         switchMap((isExist: boolean) => {
             if (!isExist) {
                 return httpCall.pipe(setCacheValueOperator(key, options))
             }
 
             return from(getCacheValue<T>(key, skipCache)).pipe(
-                switchMap((cacheValue: T) => {
+                switchMap((cacheValue: T | null) => {
                     switch (true) {
                         case !cacheValue:
                             return httpCall.pipe(setCacheValueOperator(key, options))

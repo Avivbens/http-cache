@@ -12,4 +12,8 @@ export interface HttpCacheOptions {
      * @description skipCache will skip the cache and make a request, default is false
      */
     skipCache?: boolean
+    /**
+     * @description reference for group of related requests
+     */
+    reference?: string
 }

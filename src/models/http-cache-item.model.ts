@@ -11,5 +11,7 @@ export interface HttpCacheItem<T = unknown> {
     res: T
     ttl?: number
     version?: string
+    reference: string
+    url: string
     updatedAt: number
 }

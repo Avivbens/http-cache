@@ -1,2 +1,2 @@
-export type * from './public-api/types'
-export * from './public-api/cache'
+export { withCache } from './services/http-cache.service'
+export { HttpCacheOptions } from './models/http-cache-options.model'
